@@ -1,0 +1,74 @@
+version: "3.8"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phase4-web
+    ports:
+      - "8082:5000"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      APP_ENV: phase4
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  db:
+    image: postgres:15-alpine
+    container_name: phase4-db
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - phase4_postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phase4-migrator
+    command: ["python", "migrate.py"]
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      APP_ENV: phase4
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: "no"
+
+volumes:
+  phase4_postgres_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
+
+
+
