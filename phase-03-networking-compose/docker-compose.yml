@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # Web application service
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phase3-web
+    ports:
+      - "8080:5000"  # Host:Container
+    environment:
+      # Database connection settings
+      DB_HOST: db  # Service name - Docker DNS resolves this
+      DB_PORT: 5432
+      DB_NAME: appdb
+      DB_USER: appuser
+      DB_PASSWORD: apppass
+      APP_ENV: phase3
+    depends_on:
+      db:
+        condition: service_healthy  # Wait for db to be healthy
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PostgreSQL database service
+  db:
+    image: postgres:15-alpine
+    container_name: phase3-db
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Expose port for debugging (optional - remove in production)
+    # ports:
+    #   - "5432:5432"
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+
+# Networks
+networks:
+  app-network:
+    driver: bridge
+
