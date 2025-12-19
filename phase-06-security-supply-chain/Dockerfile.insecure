@@ -1,0 +1,34 @@
+# INSECURE Dockerfile - For comparison only
+# DO NOT USE IN PRODUCTION
+# Demonstrates what NOT to do
+
+# Using full image (larger attack surface)
+FROM python:3.11
+
+# No security environment variables
+WORKDIR /app
+
+# Installing unnecessary packages
+RUN apt-get update && apt-get install -y \
+    vim \
+    curl \
+    wget \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy everything (including potential secrets)
+COPY . .
+
+# Installing dependencies as root
+RUN pip install -r requirements.txt
+
+# Running as root (INSECURE!)
+# No USER directive - runs as root
+
+EXPOSE 5000
+
+# No healthcheck
+
+CMD ["python", "app.py"]
+

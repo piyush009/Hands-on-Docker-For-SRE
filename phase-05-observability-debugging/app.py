@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""
+Phase 5 Flask App - Enhanced with observability features:
+- Structured logging (JSON format)
+- Prometheus metrics
+- Health endpoints (liveness and readiness)
+- Request logging middleware
+"""
+
+import os
+import time
+import json
+import logging
+from datetime import datetime
+from flask import Flask, jsonify, request
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
+# Configure structured logging
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'level': record.levelname,
+            'service': 'phase5-web',
+            'message': record.getMessage(),
+        }
+        # Add extra fields if present
+        if hasattr(record, 'method'):
+            log_entry['method'] = record.method
+        if hasattr(record, 'path'):
+            log_entry['path'] = record.path
+        if hasattr(record, 'status'):
+            log_entry['status'] = record.status
+        if hasattr(record, 'duration_ms'):
+            log_entry['duration_ms'] = record.duration_ms
+        if hasattr(record, 'error'):
+            log_entry['error'] = record.error
+        return json.dumps(log_entry)
+
+# Set up logger
+logger = logging.getLogger('phase5-web')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logger.addHandler(handler)
+
+app = Flask(__name__)
+
+# Prometheus metrics
+http_requests_total = Counter(
+    'http_requests_total',
+    'Total HTTP requests',
+    ['method', 'endpoint', 'status']
+)
+
+http_request_duration_seconds = Histogram(
+    'http_request_duration_seconds',
+    'HTTP request duration in seconds',
+    ['method', 'endpoint']
+)
+
+http_errors_total = Counter(
+    'http_errors_total',
+    'Total HTTP errors',
+    ['method', 'endpoint', 'status']
+)
+
+# Database configuration
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'db'),
+    'port': os.getenv('DB_PORT', '5432'),
+    'database': os.getenv('DB_NAME', 'appdb'),
+    'user': os.getenv('DB_USER', 'appuser'),
+    'password': os.getenv('DB_PASSWORD', 'apppass'),
+}
+
+# Track if database is ready
+db_ready = False
+
+
+def get_db_connection():
+    """Create and return a database connection."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        return conn
+    except psycopg2.Error as e:
+        logger.error('Database connection error', extra={'error': str(e)})
+        return None
+
+
+def init_db():
+    """Initialize database schema."""
+    global db_ready
+    conn = get_db_connection()
+    if not conn:
+        db_ready = False
+        return False
+    
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR(50) UNIQUE NOT NULL,
+                    email VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            db_ready = True
+            logger.info('Database initialized successfully')
+            return True
+    except psycopg2.Error as e:
+        logger.error('Database initialization error', extra={'error': str(e)})
+        conn.rollback()
+        db_ready = False
+        return False
+    finally:
+        conn.close()
+
+
+# Request logging middleware
+@app.before_request
+def before_request():
+    request.start_time = time.time()
+
+
+@app.after_request
+def after_request(response):
+    # Calculate request duration
+    duration_ms = (time.time() - request.start_time) * 1000
+    
+    # Record metrics
+    http_requests_total.labels(
+        method=request.method,
+        endpoint=request.endpoint or request.path,
+        status=response.status_code
+    ).inc()
+    
+    http_request_duration_seconds.labels(
+        method=request.method,
+        endpoint=request.endpoint or request.path
+    ).observe(duration_ms / 1000)
+    
+    # Record errors
+    if response.status_code >= 400:
+        http_errors_total.labels(
+            method=request.method,
+            endpoint=request.endpoint or request.path,
+            status=response.status_code
+        ).inc()
+    
+    # Log request
+    logger.info(
+        'Request processed',
+        extra={
+            'method': request.method,
+            'path': request.path,
+            'status': response.status_code,
+            'duration_ms': round(duration_ms, 2)
+        }
+    )
+    
+    return response
+
+
+@app.route('/')
+def index():
+    """Root endpoint."""
+    return jsonify({
+        'service': 'phase5-flask-observable',
+        'phase': 5,
+        'description': 'Observability and debugging demo',
+        'endpoints': {
+            '/healthz': 'Liveness probe',
+            '/readyz': 'Readiness probe',
+            '/metrics': 'Prometheus metrics',
+            '/users': 'List users from database'
+        }
+    })
+
+
+@app.route('/healthz')
+def healthz():
+    """
+    Liveness probe - checks if application is alive.
+    Should be lightweight and not check dependencies.
+    """
+    return jsonify({
+        'status': 'healthy',
+        'service': 'phase5-web',
+        'timestamp': datetime.utcnow().isoformat() + 'Z'
+    }), 200
+
+
+@app.route('/readyz')
+def readiness():
+    """
+    Readiness probe - checks if application is ready to serve traffic.
+    Can check dependencies (database, cache, etc.).
+    """
+    global db_ready
+    
+    # Check database connection
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute('SELECT 1')
+            conn.close()
+            db_ready = True
+            return jsonify({
+                'status': 'ready',
+                'service': 'phase5-web',
+                'database': 'connected',
+                'timestamp': datetime.utcnow().isoformat() + 'Z'
+            }), 200
+        except psycopg2.Error as e:
+            logger.error('Readiness check failed', extra={'error': str(e)})
+            db_ready = False
+            return jsonify({
+                'status': 'not ready',
+                'service': 'phase5-web',
+                'database': 'disconnected',
+                'error': str(e)
+            }), 503
+    else:
+        db_ready = False
+        return jsonify({
+            'status': 'not ready',
+            'service': 'phase5-web',
+            'database': 'disconnected'
+        }), 503
+
+
+@app.route('/metrics')
+def metrics():
+    """Prometheus metrics endpoint."""
+    return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
+
+
+@app.route('/users')
+def get_users():
+    """Fetch all users from database."""
+    conn = get_db_connection()
+    if not conn:
+        logger.error('Database connection failed', extra={'endpoint': '/users'})
+        return jsonify({
+            'error': 'Database connection failed',
+            'users': []
+        }), 503
+    
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT id, username, email, created_at FROM users ORDER BY id')
+            users = cur.fetchall()
+            logger.info('Users fetched successfully', extra={'count': len(users)})
+            return jsonify({
+                'count': len(users),
+                'users': [dict(user) for user in users]
+            }), 200
+    except psycopg2.Error as e:
+        logger.error('Database query error', extra={'error': str(e), 'endpoint': '/users'})
+        return jsonify({
+            'error': 'Database query failed',
+            'details': str(e)
+        }), 500
+    finally:
+        conn.close()
+
+
+if __name__ == '__main__':
+    # Initialize database on startup
+    logger.info('Starting application...')
+    if init_db():
+        logger.info('Application started successfully')
+    else:
+        logger.warning('Database initialization failed - app will still start')
+    
+    # Run Flask app
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
