@@ -179,10 +179,10 @@ You'll see:
 
 ```bash
 # From web container, ping db
-docker-compose exec web ping -c 3 db
+docker-compose exec web getent hosts db
 
 # From web container, test PostgreSQL connection
-docker-compose exec web python -c "import psycopg2; conn = psycopg2.connect(host='db', dbname='appdb', user='appuser', password='apppass'); print('Connected!')"
+docker-compose exec web python -c 'import psycopg2; conn = psycopg2.connect(host="db", dbname="appdb", user="appuser", password="apppass"); print("Connected!")'
 ```
 
 ### 7.3. Connect External Container to Compose Network
@@ -431,4 +431,5 @@ You are ready to move on when you can:
 - Handle environment variables and secrets appropriately.
 
 Next, we'll do **Phase 4 – Data & State Management** (advanced volume patterns, backups, migrations, and stateful workloads).
+
 
